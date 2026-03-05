@@ -1,0 +1,175 @@
+{
+  "table_index": 1,
+  "page_number": 3,
+  "source_pages": [
+    3
+  ],
+  "is_multipage": false,
+  "num_rows": 2,
+  "num_cols": 5,
+  "col_labels": [
+    "col_0",
+    "col_1",
+    "col_2",
+    "col_3",
+    "col_4"
+  ],
+  "cells": [
+    {
+      "text": "",
+      "row_start": 0,
+      "row_end": 1,
+      "col_start": 0,
+      "col_end": 1,
+      "row_span": 1,
+      "col_span": 1,
+      "is_column_header": false,
+      "is_row_header": false,
+      "is_row_section": false,
+      "bbox": null,
+      "source_page": 3
+    },
+    {
+      "text": "",
+      "row_start": 0,
+      "row_end": 1,
+      "col_start": 1,
+      "col_end": 2,
+      "row_span": 1,
+      "col_span": 1,
+      "is_column_header": false,
+      "is_row_header": false,
+      "is_row_section": false,
+      "bbox": null,
+      "source_page": 3
+    },
+    {
+      "text": "humans that they have occasionally been confused at crime scenes.",
+      "row_start": 0,
+      "row_end": 1,
+      "col_start": 2,
+      "col_end": 3,
+      "row_span": 1,
+      "col_span": 1,
+      "is_column_header": false,
+      "is_row_header": false,
+      "is_row_section": false,
+      "bbox": {
+        "left": 264.75,
+        "top": 80.44399999999996,
+        "right": 344.778,
+        "bottom": 140.75699999999995
+      },
+      "source_page": 3
+    },
+    {
+      "text": "with unique fingerprints.",
+      "row_start": 0,
+      "row_end": 1,
+      "col_start": 3,
+      "col_end": 4,
+      "row_span": 1,
+      "col_span": 1,
+      "is_column_header": false,
+      "is_row_header": false,
+      "is_row_section": false,
+      "bbox": {
+        "left": 358.5,
+        "top": 80.44399999999996,
+        "right": 415.932,
+        "bottom": 102.80999999999995
+      },
+      "source_page": 3
+    },
+    {
+      "text": "",
+      "row_start": 0,
+      "row_end": 1,
+      "col_start": 4,
+      "col_end": 5,
+      "row_span": 1,
+      "col_span": 1,
+      "is_column_header": false,
+      "is_row_header": false,
+      "is_row_section": false,
+      "bbox": null,
+      "source_page": 3
+    },
+    {
+      "text": "Bob",
+      "row_start": 1,
+      "row_end": 2,
+      "col_start": 0,
+      "col_end": 1,
+      "row_span": 1,
+      "col_span": 1,
+      "is_column_header": false,
+      "is_row_header": false,
+      "is_row_section": false,
+      "bbox": {
+        "left": 77.25,
+        "top": 154.938,
+        "right": 96.813,
+        "bottom": 164.65599999999995
+      },
+      "source_page": 3
+    },
+    {
+      "text": "Frosty beginnings and resolutions abound.",
+      "row_start": 1,
+      "row_end": 2,
+      "col_start": 1,
+      "col_end": 2,
+      "row_span": 1,
+      "col_span": 1,
+      "is_column_header": false,
+      "is_row_header": false,
+      "is_row_section": false,
+      "bbox": {
+        "left": 171.0,
+        "top": 154.938,
+        "right": 245.572,
+        "bottom": 202.60199999999998
+      },
+      "source_page": 3
+    },
+    {
+      "text": "Hearts and groundhogs, winter's midpoints.",
+      "row_start": 1,
+      "row_end": 2,
+      "col_start": 2,
+      "col_end": 4,
+      "row_span": 1,
+      "col_span": 2,
+      "is_column_header": false,
+      "is_row_header": false,
+      "is_row_section": false,
+      "bbox": {
+        "left": 264.75,
+        "top": 154.938,
+        "right": 423.218,
+        "bottom": 177.30499999999995
+      },
+      "source_page": 3
+    },
+    {
+      "text": "Lion to lamb, spring's hopeful arrival.",
+      "row_start": 1,
+      "row_end": 2,
+      "col_start": 4,
+      "col_end": 5,
+      "row_span": 1,
+      "col_span": 1,
+      "is_column_header": false,
+      "is_row_header": false,
+      "is_row_section": false,
+      "bbox": {
+        "left": 452.25,
+        "top": 154.938,
+        "right": 529.047,
+        "bottom": 189.95399999999995
+      },
+      "source_page": 3
+    }
+  ]
+}
