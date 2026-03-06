@@ -63,84 +63,93 @@ def _extract_with_docling(pdf_path: str,
         }
     )
 
-    result = converter.convert(pdf_path)
-    doc    = result.document
+    try:
+        result = converter.convert(pdf_path)
+        doc    = result.document
 
-    # Page height map (Docling uses bottom-left origin; we flip to top-down)
-    page_heights: dict[int, float] = {}
-    for page_no, page_obj in doc.pages.items():
-        try:
-            page_heights[int(page_no)] = float(page_obj.size.height)
-        except Exception:
-            page_heights[int(page_no)] = 842.0
+        # Page height map (Docling uses bottom-left origin; we flip to top-down)
+        page_heights: dict[int, float] = {}
+        for page_no, page_obj in doc.pages.items():
+            try:
+                page_heights[int(page_no)] = float(page_obj.size.height)
+            except Exception:
+                page_heights[int(page_no)] = 842.0
 
-    # Label → kind mapping
-    _LABEL_MAP = {
-        "title"       : "TITLE",
-        "text"        : "PARAGRAPH",
-        "list_item"   : "LIST_ITEM",
-        "caption"     : "CAPTION",
-        "footnote"    : "FOOTNOTE",
-        "formula"     : "PARAGRAPH",
-        "code"        : "PARAGRAPH",
-        "page_header" : None,   # skip
-        "page_footer" : None,   # skip
-        "page_number" : None,   # skip
-        "table"       : None,   # skip — pdfplumber handles
-        "picture"     : None,   # skip
-    }
+        # Label → kind mapping
+        _LABEL_MAP = {
+            "title"       : "TITLE",
+            "text"        : "PARAGRAPH",
+            "list_item"   : "LIST_ITEM",
+            "caption"     : "CAPTION",
+            "footnote"    : "FOOTNOTE",
+            "formula"     : "PARAGRAPH",
+            "code"        : "PARAGRAPH",
+            "page_header" : None,   # skip
+            "page_footer" : None,   # skip
+            "page_number" : None,   # skip
+            "table"       : None,   # skip — pdfplumber handles
+            "picture"     : None,   # skip
+        }
 
-    def label_to_kind(item) -> str | None:
-        label_val = getattr(item, "label", None)
-        if label_val is None:
-            return None
-        label_str = label_val.value if hasattr(label_val, "value") else str(label_val)
-        if label_str == "section_header":
-            level = getattr(item, "level", 1)
-            return f"H{min(level, 3)}"
-        return _LABEL_MAP.get(label_str, "PARAGRAPH")
+        def label_to_kind(item) -> str | None:
+            label_val = getattr(item, "label", None)
+            if label_val is None:
+                return None
+            label_str = label_val.value if hasattr(label_val, "value") else str(label_val)
+            if label_str == "section_header":
+                level = getattr(item, "level", 1)
+                return f"H{min(level, 3)}"
+            return _LABEL_MAP.get(label_str, "PARAGRAPH")
 
-    def get_pos(item, heights):
-        try:
-            prov    = item.prov[0]
-            page_no = prov.page_no
-            bbox    = prov.bbox
-            h       = heights.get(page_no, 842.0)
-            # Docling bbox.t / bbox.b are in bottom-left origin → flip
-            top    = h - bbox.t
-            bottom = h - bbox.b
-            return page_no, min(top, bottom), max(top, bottom)
-        except Exception:
-            return None
+        def get_pos(item, heights):
+            try:
+                prov    = item.prov[0]
+                page_no = prov.page_no
+                bbox    = prov.bbox
+                h       = heights.get(page_no, 842.0)
+                # Docling bbox.t / bbox.b are in bottom-left origin → flip
+                top    = h - bbox.t
+                bottom = h - bbox.b
+                return page_no, min(top, bottom), max(top, bottom)
+            except Exception:
+                return None
 
-    blocks = []
-    skipped = 0
-    for item, _level in doc.iterate_items():
-        kind = label_to_kind(item)
-        if kind is None:
-            continue
-        text = getattr(item, "text", "").strip()
-        if not text:
-            continue
-        pos = get_pos(item, page_heights)
-        if pos is None:
-            continue
-        page_no, top, bottom = pos
+        blocks = []
+        skipped = 0
+        for item, _level in doc.iterate_items():
+            kind = label_to_kind(item)
+            if kind is None:
+                continue
+            text = getattr(item, "text", "").strip()
+            if not text:
+                continue
+            pos = get_pos(item, page_heights)
+            if pos is None:
+                continue
+            page_no, top, bottom = pos
 
-        # ── Suppress text inside known table zones ────────────────────────────
-        if _inside_table(page_no, top, bottom, table_zones):
-            skipped += 1
-            continue
+            # ── Suppress text inside known table zones ────────────────────────────
+            if _inside_table(page_no, top, bottom, table_zones):
+                skipped += 1
+                continue
 
-        blocks.append({
-            "page": page_no, "top": top, "bottom": bottom,
-            "kind": kind,    "text": text, "col": 0,
-        })
+            blocks.append({
+                "page": page_no, "top": top, "bottom": bottom,
+                "kind": kind,    "text": text, "col": 0,
+            })
 
-    if skipped:
-        print(f"         Suppressed {skipped} text block(s) inside table zones")
+        if skipped:
+            print(f"         Suppressed {skipped} text block(s) inside table zones")
 
-    return blocks
+        return blocks
+    finally:
+        # Ensure proper cleanup to avoid memory leaks
+        if 'result' in locals():
+            result = None
+        if 'doc' in locals():
+            doc = None
+        if 'converter' in locals():
+            converter = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -354,8 +363,12 @@ def extract_text_blocks(pdf_path: str,
     table_zones = table_zones or {}
 
     if _docling_available():
-        print("         Backend: Docling (semantic layout + multi-column)")
-        return _extract_with_docling(pdf_path, table_zones)
+        try:
+            print("         Backend: Docling (semantic layout + multi-column)")
+            return _extract_with_docling(pdf_path, table_zones)
+        except Exception as e:
+            print(f"         Docling failed ({type(e).__name__}: {e}), falling back to pdfplumber")
+            return _extract_with_pdfplumber(pdf_path, table_zones)
     else:
         print("         Backend: pdfplumber (column-detection fallback)")
         return _extract_with_pdfplumber(pdf_path, table_zones)
