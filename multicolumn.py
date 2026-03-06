@@ -1,8 +1,8 @@
 import fitz  # PyMuPDF
 import json
 
-PDF_PATH = "3col_parsing.pdf"  # use text-based PDF
-OUTPUT_JSON = "parsed_output_pymupdf.json"
+PDF_PATH = "2Columns.pdf"  # use text-based PDF
+OUTPUT_JSON = "2Columns.json"
 
 # -----------------------------
 # Open PDF

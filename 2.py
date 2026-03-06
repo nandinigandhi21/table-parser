@@ -1,6 +1,6 @@
 from docling.document_converter import DocumentConverter
 
-source = "tables.pdf"  # file path or URL
+source = "3Columns.pdf"  # file path or URL
 converter = DocumentConverter()
 doc = converter.convert(source).document
 
