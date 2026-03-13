@@ -162,36 +162,60 @@ def _detect_columns(words: list[dict], page_width: float,
     Detect column boundary x-coordinates by finding significant gaps
     in the x0 distribution of words.
 
-    A gap qualifies as a column separator only when:
+    A gap qualifies as a column separator only when ALL of:
       1. Gap width > 6% of page width
-      2. At least `min_words_per_col` words exist on EACH side of the gap
+      2. At least `min_words_per_col` words exist on EACH side
+      3. Y-overlap ratio > 30%: words on both sides share many of the same
+         vertical positions, confirming side-by-side layout rather than a
+         single-column page where justified text creates accidental x-gaps.
 
     Returns sorted list of x-positions that mark the START of each column.
     e.g. [57.0, 318.0] = two columns starting at x=57 and x=318.
     """
-    COLUMN_GAP_RATIO = 0.06   # gap > 6% of page width = column separator candidate
+    COLUMN_GAP_RATIO    = 0.06   # gap > 6% of page width = candidate separator
+    COL_START_Y_TOL_PT  = 30.0   # both columns must start within this many pts of each other
 
     min_gap = page_width * COLUMN_GAP_RATIO
     x0s     = sorted(set(round(w["x0"]) for w in words if w.get("x0") is not None))
     if not x0s:
         return [0.0]
 
-    # Find candidate gaps
     candidate_splits = []
     for i in range(1, len(x0s)):
-        if x0s[i] - x0s[i - 1] >= min_gap:
-            split_x = float(x0s[i])
-            # Count words on each side
-            left_count  = sum(1 for w in words if w["x0"] <  split_x)
-            right_count = sum(1 for w in words if w["x0"] >= split_x)
-            if left_count >= min_words_per_col and right_count >= min_words_per_col:
-                candidate_splits.append(split_x)
+        if x0s[i] - x0s[i - 1] < min_gap:
+            continue
+        split_x     = float(x0s[i])
+        left_words  = [w for w in words if w["x0"] <  split_x]
+        right_words = [w for w in words if w["x0"] >= split_x]
+
+        if len(left_words) < min_words_per_col or len(right_words) < min_words_per_col:
+            continue
+
+        # Column-start proximity check: in a true side-by-side 2-column layout,
+        # both columns start at approximately the same vertical position on the page.
+        # If the right "column" starts far below the left, it's just a continuation
+        # of a single-column flow — a false positive caused by justified text.
+        l_min_y = min(w["top"] for w in left_words)
+        r_min_y = min(w["top"] for w in right_words)
+        if abs(r_min_y - l_min_y) <= COL_START_Y_TOL_PT:
+            candidate_splits.append(split_x)
 
     col_starts = [float(x0s[0])] + candidate_splits
     return col_starts
 
 
-def _assign_column(x0: float, col_starts: list[float]) -> int:
+def _assign_column(x0: float, col_starts: list[float],
+                   x1: float | None = None) -> int:
+    """
+    Return the column index for a word at position x0.
+    If x1 is provided and the word spans across a column boundary,
+    it is treated as a full-width spanning element and assigned col=0.
+    """
+    if x1 is not None and len(col_starts) > 1:
+        for split in col_starts[1:]:
+            if x0 < split and x1 > split:
+                return 0   # spanning element → left column / col 0
+
     col = 0
     for i, start in enumerate(col_starts):
         if x0 >= start - 2:
@@ -243,10 +267,15 @@ def _extract_with_pdfplumber(pdf_path: str,
 
     tiers = _build_size_tiers(pdf_path)
 
-    def get_kind(size: float, fontname: str) -> str:
+    def get_kind(size: float, fontname: str, word_count_on_line: int = 99) -> str:
         tier    = tiers.get(round(size, 1), "BODY")
         is_bold = bool(re.search(r"bold|Black|Heavy|Semibold", fontname, re.IGNORECASE))
         if tier in ("TITLE", "H1", "H2", "H3"):
+            # Drop-cap heuristic: single oversized letter on a line that has
+            # body-sized neighbours → treat as PARAGRAPH, not heading.
+            # Triggered when word_count_on_line > 1 (mixed sizes on same line).
+            if word_count_on_line > 1:
+                return "PARAGRAPH"
             return tier
         return "BOLD" if is_bold else "PARAGRAPH"
 
@@ -296,7 +325,28 @@ def _extract_with_pdfplumber(pdf_path: str,
             n_cols     = len(col_starts)
 
             for w in words:
-                w["_col"] = _assign_column(w["x0"], col_starts)
+                w["_col"] = _assign_column(w["x0"], col_starts, x1=w.get("x1"))
+
+            # ── Heading line unification ──────────────────────────────────────
+            # Words on the same visual line that are heading-sized should all
+            # share the same column. If any word on the line is already in col=0
+            # (e.g. because it spans the column split), pull the rest to col=0 too.
+            # This fixes multi-word titles like "The Transformative Power of Society"
+            # where some words fall past the column boundary.
+            if len(col_starts) > 1:
+                from collections import Counter as _C
+                _sz_counts = _C(round(w["size"], 0) for w in words)
+                body_sz = _sz_counts.most_common(1)[0][0]
+                # Group words by their rounded top (same visual line)
+                from collections import defaultdict
+                line_groups: dict[int, list] = defaultdict(list)
+                for w in words:
+                    if w["size"] > body_sz + 1:   # heading-sized only
+                        line_groups[round(w["top"])].append(w)
+                for grp in line_groups.values():
+                    if any(w["_col"] == 0 for w in grp):
+                        for w in grp:
+                            w["_col"] = 0
 
             # ── Group lines per column ────────────────────────────────────────
             line_tuples = []
@@ -314,8 +364,36 @@ def _extract_with_pdfplumber(pdf_path: str,
                     if not text.strip():
                         continue
                     dominant = max(line, key=lambda w: w["size"])
-                    kind = get_kind(dominant["size"], dominant["fontname"])
+                    # Count how many words have a DIFFERENT size from dominant
+                    # (detects drop caps: 1 oversized letter + N body-size words)
+                    mixed = sum(1 for w in line if abs(w["size"] - dominant["size"]) > 1.5)
+                    kind = get_kind(dominant["size"], dominant["fontname"],
+                                    word_count_on_line=len(line) if mixed > 0 else 1)
                     line_tuples.append((text, kind, top, bottom, col_idx))
+
+            _HEADING_KINDS = {"TITLE", "H1", "H2", "H3"}
+
+            # ── Merge drop-cap lines into their following paragraph ───────────
+            # A drop cap produces a single oversized letter on its own line
+            # immediately above the paragraph continuation. Detect and join.
+            merged_tuples = []
+            i = 0
+            while i < len(line_tuples):
+                text, kind, top, bottom, col = line_tuples[i]
+                if (kind in _HEADING_KINDS
+                        and len(text.strip()) == 1          # single letter
+                        and i + 1 < len(line_tuples)):
+                    ntext, nkind, ntop, nbottom, ncol = line_tuples[i + 1]
+                    if ntop - bottom < 25.0 and ncol == col:
+                        # Join: prepend drop-cap letter to next line
+                        merged_tuples.append(
+                            (text.strip() + ntext, nkind, top, nbottom, col)
+                        )
+                        i += 2
+                        continue
+                merged_tuples.append(line_tuples[i])
+                i += 1
+            line_tuples = merged_tuples
 
             # ── Merge consecutive same-kind/col lines into blocks ─────────────
             if not line_tuples:
@@ -323,7 +401,21 @@ def _extract_with_pdfplumber(pdf_path: str,
 
             ct, ck, ctop, cbot, ccol = line_tuples[0]
             for text, kind, top, bottom, col in line_tuples[1:]:
-                if kind == ck and col == ccol and (top - cbot) < 10.0:
+                # Headings can span multiple lines and have larger line-spacing;
+                # allow a bigger vertical gap and allow cross-column merging for
+                # centred titles (col may differ because centred text straddles mid-page).
+                is_heading_continuation = (
+                    kind == ck
+                    and kind in _HEADING_KINDS
+                    and (top - cbot) < 20.0   # wider gap tolerance for headings
+                )
+                is_body_continuation = (
+                    kind == ck
+                    and col == ccol
+                    and kind not in _HEADING_KINDS
+                    and (top - cbot) < 10.0
+                )
+                if is_heading_continuation or is_body_continuation:
                     ct   += " " + text
                     cbot  = bottom
                 else:

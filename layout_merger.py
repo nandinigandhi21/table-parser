@@ -141,6 +141,62 @@ def merge_layout(
     return elements
 
 
+import re as _re
+_CAPTION_PREFIX_RE = _re.compile(
+    r"^\s*(figure|fig\.?|image|img\.?|plate|chart|diagram|illustration|photo|exhibit)\s*[\d\.\-:]?",
+    _re.IGNORECASE,
+)
+
+
+def _dedup_caption_blocks(elements: list[dict]) -> list[dict]:
+    """
+    Remove text blocks that duplicate an image caption.
+
+    Two cases handled:
+      1. A CAPTION-kind text block whose text exactly matches a caption already
+         embedded in an image element on the same page → drop.
+      2. A PARAGRAPH/CAPTION text block matching a caption prefix pattern
+         (Figure:, Fig., Image, etc.) that appears within 5 elements of an image
+         on the same page → drop (catches cases where fitz detected caption but
+         pdfplumber also extracted the same text as a paragraph).
+    """
+    # Collect all image caption strings per page (normalised to lowercase)
+    image_captions_by_page: dict[int, set[str]] = {}
+    for el in elements:
+        if el["type"] == "image":
+            cap = el.get("caption", "").strip()
+            if cap:
+                image_captions_by_page.setdefault(el["page"], set()).add(cap.lower())
+
+    # Collect pages that have at least one image element
+    pages_with_images: set[int] = {el["page"] for el in elements if el["type"] == "image"}
+
+    filtered = []
+    for el in elements:
+        if el["type"] != "text":
+            filtered.append(el)
+            continue
+
+        text_norm = el["text"].strip().lower()
+        page      = el["page"]
+
+        # Case 1: exact match with an image caption on this page
+        if text_norm in image_captions_by_page.get(page, set()):
+            continue
+
+        # Case 2: short caption-prefix text block (e.g. "Figure: Nature Image")
+        # These appear when pdfplumber extracts caption text that sits inside
+        # the image bounding box. Suppress them unconditionally — they are either
+        # already rendered as part of an image element (Case 1) or are artefacts
+        # from the image area that should not appear as standalone paragraphs.
+        # Guard: must be short (<= 200 chars) and match a caption prefix pattern.
+        if len(el["text"].strip()) <= 200 and _CAPTION_PREFIX_RE.match(el["text"]):
+            continue
+
+        filtered.append(el)
+    return filtered
+
+
 # ── Markdown builder ──────────────────────────────────────────────────────────
 
 def build_markdown(
@@ -163,6 +219,7 @@ def build_markdown(
         Single Markdown string with all elements in original reading order.
     """
     elements  = merge_layout(text_blocks, tables, images, formulas)
+    elements  = _dedup_caption_blocks(elements)
     lines: list[str] = []
     prev_page = None
     prev_kind = None

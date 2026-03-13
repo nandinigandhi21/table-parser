@@ -74,9 +74,6 @@ Artificial intelligence has transformed the way organizations interact with digi
 *Figure: Nature Image*
 
 
-*Figure: Nature Image*
-
-
 red hours of manual effort can now be completed in a fraction of the time. One of the most promising applications of artificial intelligence in document processing involves automated knowledge extraction. In this scenario, algorithms analyze documents to identify entities such as people, organizations, locations, dates, and financial values. Once extracted, these entities can be stored in structured databases that enable powerful search and analysis capabilities. This transformation from unstructured text to structured data allows organizations to eunlock insights that were previously hidden within large volumes of documents. Despite these advances, automated document understanding remains a challenging problem. Documents vary widely in structure, formatting, and content complexity. A parser designed for academic papers may struggle when presented with financial statements or government forms. For this reason, robust testing of document processing systems is essential. Developers often create specialized test documents that contain diverse formatting patterns and unusual layouts in order to evaluate the reliability of their extraction algorithms.
 
 
@@ -88,6 +85,3 @@ red hours of manual effort can now be completed in a fraction of the time. One o
 $$
 3x^{2}+5y=6
 $$
-
-
-3x 2 + 5y = 6 4 356

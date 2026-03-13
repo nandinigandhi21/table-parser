@@ -152,6 +152,33 @@ def parse_pdf(pdf_path: str, output_dir: str = "output") -> None:
         print(f"         Formula extraction failed ({type(e).__name__}: {e}), skipping")
         formulas = []
 
+    # ── Step 4b: Suppress text blocks that overlap formula zones ─────────────
+    # Formula text (e.g. '3x 2 + 5y = 6') leaks as plain text blocks because
+    # text_extractor runs before formula_extractor. Post-filter here now that
+    # we have formula bboxes.
+    if formulas:
+        formula_zones: dict[int, list[tuple]] = {}
+        for f in formulas:
+            # Expand zone downward to capture nearby sub/superscripts and
+            # annotation artefacts (footnote numbers, noise glyphs) that sit
+            # just outside the formula bbox but belong to the same region.
+            formula_zones.setdefault(f["page"], []).append(
+                (f["top"] - 5, f["bottom"] + 30)
+            )
+
+        def _in_formula_zone(page: int, top: float, bottom: float) -> bool:
+            for ft, fb in formula_zones.get(page, []):
+                if min(bottom, fb) - max(top, ft) > 2:
+                    return True
+            return False
+
+        before      = len(text_blocks)
+        text_blocks = [b for b in text_blocks
+                       if not _in_formula_zone(b["page"], b["top"], b["bottom"])]
+        suppressed  = before - len(text_blocks)
+        if suppressed:
+            print(f"         Suppressed {suppressed} text block(s) inside formula zones")
+
     # ── Step 5: Merge into layout-aware Markdown ──────────────────────────────
     print("Step 5 — Merging into layout-aware Markdown...\n")
     full_md     = build_markdown(text_blocks, tables, images, formulas)

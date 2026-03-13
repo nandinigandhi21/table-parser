@@ -40,10 +40,11 @@ logging.getLogger("docling").setLevel(logging.ERROR)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-RENDER_SCALE    = 3      # pypdfium2 render scale (3× = ~216 dpi)
-CROP_PADDING    = 10     # pt padding around formula bbox before crop
-BASELINE_GAP    = 8.0    # pt gap between body baselines → new formula group
-SUB_SUPER_RATIO = 0.9    # expand span by body_size × this above/below
+RENDER_SCALE       = 3      # pypdfium2 render scale (3× = ~216 dpi)
+CROP_PADDING_SIDE  = 12     # pt padding left/right and bottom around formula bbox
+CROP_PADDING_TOP   = 3      # pt padding above formula top (small to avoid label bleed)
+BASELINE_GAP       = 8.0    # pt gap between body baselines (legacy, not used in v2 locator)
+SUB_SUPER_RATIO    = 0.9    # legacy constant kept for compatibility
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  LaTeX POST-PROCESSING CLEANUP
@@ -217,6 +218,73 @@ def clean_latex(latex: str) -> str:
     return latex
 
 
+# Math-italic Unicode → ASCII (for reconcile_latex)
+_UNICODE_MATH_TRANS = str.maketrans({
+    '𝑙':'l','𝑜':'o','𝑔':'g','𝑛':'n','𝑎':'a','𝑏':'b','𝑥':'x',
+    '𝑦':'y','𝑖':'i','𝑗':'j','𝑘':'k','𝑚':'m','𝑝':'p','𝑞':'q',
+    '𝑟':'r','𝑠':'s','𝑡':'t','𝑢':'u','𝑣':'v','𝑤':'w','𝑧':'z',
+    '𝐴':'A','𝐵':'B','𝐶':'C','𝐷':'D','𝐸':'E','𝐹':'F',
+})
+
+
+def reconcile_latex(latex: str, words: list[dict]) -> str:
+    """
+    Recover integrand terms that pix2tex drops from integrals.
+
+    pix2tex reliably recognises the integral sign and its bounds but
+    sometimes loses the integrand (e.g. produces \\int_{0}^{3} instead of
+    \\int_{0}^{3} 5^{n}).  This function uses the pdfplumber word list —
+    which retains the integrand as part of the '∫X' token — to patch it back.
+
+    Safe-guards:
+      - Only fires when \\int is present in latex
+      - Does nothing if the integrand is already in the latex
+      - Does nothing if no '∫' token is found in words
+    """
+    if not latex or r'\int' not in latex:
+        return latex
+
+    def _norm(t: str) -> str:
+        return t.translate(_UNICODE_MATH_TRANS).strip()
+
+    # Find the word containing the integral sign
+    int_word = next((w for w in words if '∫' in w['text']), None)
+    if not int_word:
+        return latex
+
+    # The integrand is whatever is fused to ∫ in the token (e.g. '∫5' → '5')
+    integrand = _norm(int_word['text'].replace('∫', '').strip())
+    if not integrand:
+        return latex
+
+    # Already present in latex?
+    if re.sub(r'[^a-zA-Z0-9]', '', integrand) in re.sub(r'[^a-zA-Z0-9]', '', latex):
+        return latex
+
+    # Look for a superscript word to the right of the ∫ token
+    # (smaller top value = higher on page = superscript, x0 >= int_word.x1)
+    body_size = int_word['size']
+    body_tops = [w['top'] for w in words if abs(w['size'] - body_size) < 1.5]
+    baseline  = sum(body_tops) / len(body_tops) if body_tops else int_word['top']
+
+    sups = sorted(
+        [w for w in words
+         if w['top'] < baseline - 2 and w['x0'] >= int_word['x1'] - 2],
+        key=lambda w: w['x0'],
+    )
+    integrand_latex = (
+        f'{integrand}^{{{_norm(sups[0]["text"])}}}' if sups else integrand
+    )
+
+    # Append integrand right after \int_{...}^{...}
+    return re.sub(
+        r'(\\int(?:_\{[^}]*\})?(?:\^\{[^}]*\})?)',
+        rf'\1 {integrand_latex}',
+        latex,
+        count=1,
+    )
+
+
 # Symbols / tokens that strongly indicate mathematical content
 _MATH_RE = re.compile(
     r'[=+*/^\u222b\u2211\u220f\u221a\u221e\u00b1\u2260\u2264\u2265\u2202\u00f7\u00d7]'
@@ -231,15 +299,56 @@ _MATH_RE = re.compile(
 #  STAGE 1 — LOCATE  (pdfplumber)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Natural-language words that signal a label/caption before a formula,
+# never math content themselves.
+_LABEL_WORD_RE = re.compile(
+    r'^(sigmoid|tanh|relu|softmax|activation|function|equation|formula|'
+    r'where|let|given|note|proof|theorem|lemma|corollary|example|solution)$',
+    re.IGNORECASE,
+)
+
+
+def _is_label_word(text: str) -> bool:
+    """
+    Return True if this word is a natural-language label token, not math.
+    Guards: any math symbol disqualifies the word immediately.
+    """
+    if _MATH_RE.search(text):
+        return False
+    clean = text.rstrip(":").strip()
+    if _LABEL_WORD_RE.fullmatch(clean):
+        return True
+    # Long pure-alpha word ending in ':' → label  (e.g. "Function:", "Definition:")
+    if clean.isalpha() and len(clean) > 4 and text.endswith(":"):
+        return True
+    return False
+
+
 def _locate_formulas(pdf_path: str) -> list[dict]:
     """
     Find formula bounding boxes on every page using pdfplumber.
 
+    Algorithm (v2 — fraction-aware):
+      1. Identify body font size (most frequent rounded size).
+      2. For each body-level baseline, collect ALL words (any size) within
+         [baseline - 0.85×body, baseline + 1.8×body].  This single expansion
+         reliably captures fraction numerators, denominators, and scripts that
+         are attached to a body-level expression.
+      3. Merge any two seed regions that share at least one word (shared words
+         mean they belong to the same multi-line expression, e.g. σ numerator
+         and denominator both pull in the fraction-bar region).
+      4. Strip leading label words ("Sigmoid Activation Function:", etc.) from
+         the top of each merged region.
+      5. Apply MATH_RE filter on the remaining words.
+
     Returns list of dicts:
-        {page_0, page, top, bottom, x0, x1, text}
+        {page_0, page, top, bottom, x0, x1, text, words}
     where page_0 is 0-based index and page is 1-based label.
     """
     import pdfplumber
+
+    EXPAND_UP   = 0.85   # fraction of body_size to expand upward from baseline
+    EXPAND_DOWN = 1.8    # fraction of body_size to expand downward from baseline
 
     results: list[dict] = []
 
@@ -250,63 +359,107 @@ def _locate_formulas(pdf_path: str) -> list[dict]:
             if not words:
                 continue
 
-            # Dominant body font size
+            # ── Body size ──────────────────────────────────────────────────────
             size_counts = Counter(round(w["size"], 0) for w in words)
             body_size   = size_counts.most_common(1)[0][0]
 
-            # Body-level baselines
             body_words = [w for w in words if abs(w["size"] - body_size) < 1.5]
-            baselines  = sorted(set(round(w["top"], 0) for w in body_words))
-            if not baselines:
+            if not body_words:
                 continue
+            baselines = sorted(set(round(w["top"], 0) for w in body_words))
 
-            # Cluster baselines into formula groups
-            formula_groups: list[list[float]] = []
-            cur = [baselines[0]]
-            for b in baselines[1:]:
-                if b - cur[-1] <= BASELINE_GAP:
-                    cur.append(b)
-                else:
-                    formula_groups.append(cur)
-                    cur = [b]
-            formula_groups.append(cur)
+            # ── Step 1: Build seed regions ─────────────────────────────────────
+            # Each word is assigned to its NEAREST baseline only, using midpoints
+            # between adjacent baselines as hard boundaries.  This prevents a
+            # sub/superscript that sits between two formulas from being captured
+            # by both seeds (which would incorrectly merge them).
+            seeds: list[dict] = []
+            for bi, bl in enumerate(baselines):
+                expand_top = bl - body_size * EXPAND_UP
+                expand_bot = bl + body_size * EXPAND_DOWN
+                # Boundaries are the midpoints between adjacent baselines.
+                # Use the midpoint itself as the hard floor/ceiling — NOT
+                # max(midpoint, expand_up_formula).  Using max() would create
+                # a dead zone where words sit below the midpoint but above the
+                # formula's natural expand_top, leaving them in no-man's land
+                # (excluded from both adjacent seeds).  The midpoint alone gives
+                # every word a unique owner.
+                if bi > 0:
+                    expand_top = (baselines[bi - 1] + bl) / 2
+                if bi + 1 < len(baselines):
+                    expand_bot = min(expand_bot,
+                                     (bl + baselines[bi + 1]) / 2)
+                region_words = [w for w in words
+                                if expand_top <= w["top"] <= expand_bot]
+                if not region_words:
+                    continue
+                seeds.append({
+                    "top"  : min(w["top"]    for w in region_words),
+                    "bottom": max(w["bottom"] for w in region_words),
+                    "wids" : set(id(w) for w in region_words),
+                    "wlist": region_words,
+                })
 
-            # Collect words per group, expanding for sub/superscripts
-            for gi, grp in enumerate(formula_groups):
-                next_top = (
-                    formula_groups[gi + 1][0]
-                    if gi + 1 < len(formula_groups) else float("inf")
-                )
-                span_top    = grp[0]    - body_size * SUB_SUPER_RATIO
-                span_bottom = min(grp[-1] + body_size * 1.5, next_top - 1)
+            # ── Step 2: Merge seeds sharing any word ───────────────────────────
+            # Words shared between two seed expansions mean both seeds belong to
+            # the same multi-line formula (e.g. fraction numerator + denominator).
+            merged: list[dict] = []
+            for seed in seeds:
+                placed = False
+                for m in merged:
+                    if m["wids"] & seed["wids"]:   # non-empty intersection
+                        m["wids"] |= seed["wids"]
+                        seen: set[int] = set()
+                        combined: list = []
+                        for w in m["wlist"] + seed["wlist"]:
+                            if id(w) not in seen:
+                                seen.add(id(w))
+                                combined.append(w)
+                        m["wlist"]  = combined
+                        m["top"]    = min(m["top"],    seed["top"])
+                        m["bottom"] = max(m["bottom"], seed["bottom"])
+                        placed = True
+                        break
+                if not placed:
+                    merged.append({
+                        "top"  : seed["top"],
+                        "bottom": seed["bottom"],
+                        "wids" : set(seed["wids"]),
+                        "wlist": list(seed["wlist"]),
+                    })
 
-                grp_words = [
-                    w for w in words
-                    if w["top"] >= span_top and w["top"] <= span_bottom
-                ]
-                if not grp_words:
+            # ── Step 3: Label-strip + MATH_RE filter ───────────────────────────
+            for region in merged:
+                rwords   = region["wlist"]
+                sorted_w = sorted(rwords,
+                                  key=lambda w: (round(w["top"] / 3) * 3, w["x0"]))
+
+                # Strip label prefix: non-math words sitting on the topmost row
+                top_row_y    = min(w["top"] for w in rwords)
+                label_cutoff = top_row_y + body_size * 0.6
+
+                math_words: list = []
+                for w in sorted_w:
+                    if w["top"] <= label_cutoff and _is_label_word(w["text"]):
+                        continue   # drop label token
+                    math_words.append(w)
+
+                if not math_words:
                     continue
 
-                top    = min(w["top"]    for w in grp_words)
-                bottom = max(w["bottom"] for w in grp_words)
-                x0     = min(w["x0"]    for w in grp_words)
-                x1     = max(w["x1"]    for w in grp_words)
-
-                # Reconstruct text left-to-right, top-to-bottom
-                sorted_w = sorted(grp_words, key=lambda w: (round(w["top"] / 3) * 3, w["x0"]))
-                text = " ".join(w["text"] for w in sorted_w)
-
+                text = " ".join(w["text"] for w in math_words)
                 if not _MATH_RE.search(text):
                     continue
 
                 results.append({
                     "page_0": page_num,
                     "page"  : page_label,
-                    "top"   : top,
-                    "bottom": bottom,
-                    "x0"    : x0,
-                    "x1"    : x1,
+                    "top"   : min(w["top"]    for w in math_words),
+                    "bottom": max(w["bottom"] for w in math_words),
+                    "x0"    : min(w["x0"]    for w in math_words),
+                    "x1"    : max(w["x1"]    for w in math_words),
                     "text"  : text,
+                    "words" : math_words,   # kept for reconcile_latex; removed before return
                 })
 
     return results
@@ -335,16 +488,19 @@ def _fitz_available() -> bool:
 def _crop_formula_image(pdf_path: str, page_0: int,
                         top: float, bottom: float,
                         x0: float,  x1: float,
-                        page_w: float, page_h: float) -> "Image | None":
+                        page_w: float, page_h: float,
+                        next_top: float = float("inf")) -> "Image | None":
     """
     Render the PDF page and crop the formula region.
+    next_top: top of the next formula on this page (caps bottom padding).
     Tries pypdfium2 first, then fitz (PyMuPDF).
     Returns a PIL Image or None if neither renderer is available.
     """
     from PIL import Image
 
-    padding = CROP_PADDING
-    scale   = RENDER_SCALE
+    pad_side = CROP_PADDING_SIDE
+    pad_top  = CROP_PADDING_TOP
+    scale    = RENDER_SCALE
 
     if _pypdfium2_available():
         import pypdfium2 as pdfium
@@ -372,10 +528,14 @@ def _crop_formula_image(pdf_path: str, page_0: int,
     iw, ih = img.size
     sx, sy = iw / page_w, ih / page_h
 
-    px0 = max(0,  int((x0     - padding) * sx))
-    py0 = max(0,  int((top    - padding) * sy))
-    px1 = min(iw, int((x1     + padding) * sx))
-    py1 = min(ih, int((bottom + padding) * sy))
+    px0 = max(0,  int((x0     - pad_side) * sx))
+    py0 = max(0,  int((top    - pad_top)  * sy))
+    px1 = min(iw, int((x1     + pad_side) * sx))
+    # Cap bottom padding: if next formula is closer than pad_side, use zero bottom
+    # padding so tightly-stacked formulas don't bleed into each other.
+    gap_to_next = next_top - bottom
+    bot_pad     = 0.0 if gap_to_next < pad_side else min(pad_side, gap_to_next / 2)
+    py1 = min(ih, int((bottom + bot_pad)  * sy))
 
     cropped = img.crop((px0, py0, px1, py1))
 
@@ -413,17 +573,25 @@ def _save_crops(pdf_path: str, formulas: list[dict],
     # Per-page formula index counter
     page_counters: dict[int, int] = {}
 
-    for formula in formulas:
+    for fi, formula in enumerate(formulas):
         p0     = formula["page_0"]
         pw, ph = page_sizes.get(p0, (612.0, 792.0))
         idx    = page_counters.get(p0, 0) + 1
         page_counters[p0] = idx
+
+        # next formula top on the same page (for bottom-padding cap)
+        next_top = float("inf")
+        for nf in formulas[fi + 1:]:
+            if nf["page_0"] == p0:
+                next_top = nf["top"]
+                break
 
         img = _crop_formula_image(
             pdf_path, p0,
             formula["top"], formula["bottom"],
             formula["x0"],  formula["x1"],
             pw, ph,
+            next_top=next_top,
         )
 
         filename  = f"page{formula['page']}_f{idx}.png"
@@ -463,7 +631,7 @@ def _latex_with_pix2tex(formulas: list[dict]) -> list[dict]:
         if img is None:
             continue
         try:
-            f["latex"] = clean_latex(model(img))
+            f["latex"] = reconcile_latex(clean_latex(model(img)), f.get("words", []))
         except Exception as e:
             print(f"         pix2tex failed on formula (page {f['page']}): {e}")
     return formulas
@@ -497,7 +665,9 @@ def _latex_with_texify(formulas: list[dict]) -> list[dict]:
     try:
         results = batch_inference(imgs, model, processor)
         for i, latex in zip(idxs, results):
-            formulas[i]["latex"] = clean_latex(latex.strip())
+            formulas[i]["latex"] = reconcile_latex(
+                clean_latex(latex.strip()), formulas[i].get("words", [])
+            )
     except Exception as e:
         print(f"         texify batch inference failed: {e}")
 
@@ -668,8 +838,9 @@ def extract_formulas(pdf_path: str, output_dir: str = "output") -> list[dict]:
 
     # Clean up internal-only fields before returning
     for f in formulas:
-        f.pop("crop_img",  None)
-        f.pop("page_0",    None)
+        f.pop("crop_img", None)
+        f.pop("page_0",   None)
+        f.pop("words",    None)
         f["kind"] = "FORMULA"
 
     formulas.sort(key=lambda x: (x["page"], x["top"]))
