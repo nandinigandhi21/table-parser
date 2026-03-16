@@ -1,6 +1,6 @@
 from docling.document_converter import DocumentConverter
 
-source = "3Columns.pdf"  # file path or URL
+source = "https://arxiv.org/pdf/1512.03385"  # file path or URL
 converter = DocumentConverter()
 doc = converter.convert(source).document
 

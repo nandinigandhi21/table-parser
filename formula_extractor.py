@@ -147,7 +147,21 @@ def clean_latex(latex: str) -> str:
         r'\{\\underset\{([^}]+)\}\{[^{}]*(?:\{[^{}]*\})*[^{}]*\}\}',
         r'\\int_{\1}', latex)
 
-    # 5. Unwrap \begin{array}...\end{array} (inside-out, up to 4 levels)
+    # 4e. \stackrel{N}\int_{LOW}^{WRONG} → \int_{LOW}^{N}
+    #     pix2tex/texify puts the upper limit as \stackrel{N} before \int
+    #     and then puts a wrong value in ^{...}. We extract N from \stackrel
+    #     and use it as the correct upper limit, discarding the wrong ^{...}.
+    #     e.g. \log n\stackrel{3}\int_{0}^{n} 5^{n} → \log n \int_{0}^{3} 5^{n}
+    #     NOTE: latex strings contain literal single backslashes, so we need
+    #     \\\\ in the pattern to match one literal backslash.
+    latex = re.sub(
+        r'\\stackrel\{([^}]+)\}\\int_\{([^}]+)\}\^\{[^}]+\}',
+        lambda m: f'\\int_{{{m.group(2)}}}^{{{m.group(1)}}}',
+        latex,
+    )
+    # 4e-fallback: \stackrel{N}\int with no bounds at all → just drop stackrel
+    latex = re.sub(r'\\stackrel\{[^}]+\}(\\int)', r'\1', latex)
+
     for _ in range(4):
         prev  = latex
         latex = re.sub(
@@ -212,7 +226,11 @@ def clean_latex(latex: str) -> str:
             cleaned.append(ch)
     latex = ''.join(cleaned)
 
-    # 15. Normalise whitespace
+    # 15. Remove stray punctuation artifacts: {,}  {.}  {;}  at end of expression
+    latex = re.sub(r'\{[,\.;]\}\s*$', '', latex)
+    latex = re.sub(r'\{[,\.;]\}',     '', latex)   # also mid-expression
+
+    # 16. Normalise whitespace
     latex = re.sub(r'[ \t]{2,}', ' ', latex).strip()
 
     return latex
@@ -347,7 +365,9 @@ def _locate_formulas(pdf_path: str) -> list[dict]:
     """
     import pdfplumber
 
-    EXPAND_UP   = 0.85   # fraction of body_size to expand upward from baseline
+    EXPAND_UP   = 2.5    # fraction of body_size to expand upward — large enough
+                         # to capture radical indices (e.g. the "4" in ∜356) and
+                         # tall superscripts that sit far above the baseline
     EXPAND_DOWN = 1.8    # fraction of body_size to expand downward from baseline
 
     results: list[dict] = []
@@ -850,3 +870,26 @@ def extract_formulas(pdf_path: str, output_dir: str = "output") -> list[dict]:
 def formula_extraction_available() -> bool:
     """Always True — pdfplumber fallback is always available."""
     return True
+
+
+# ── Standalone test entry point ───────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import sys
+    pdf = sys.argv[1] if len(sys.argv) > 1 else "report.pdf"
+    out = sys.argv[2] if len(sys.argv) > 2 else "test_output"
+
+    print(f"\n🔍 Testing formula extraction on: {pdf}")
+    print(f"📁 Output dir: {out}\n")
+
+    formulas = extract_formulas(pdf, output_dir=out)
+
+    print(f"\n{'─'*60}")
+    print(f"Found {len(formulas)} formula(s):\n")
+    for i, f in enumerate(formulas, 1):
+        print(f"[{i}] Page {f['page']} | "
+              f"top={f['top']:.1f}  bottom={f['bottom']:.1f}")
+        print(f"     text  : {f['text']}")
+        print(f"     latex : {f['latex'] or '(none)'}")
+        print(f"     crop  : {f['crop_path'] or '(none)'}")
+        print()
