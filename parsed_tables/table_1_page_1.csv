@@ -1,8 +1,0 @@
-Invoice #123456789,col_1,col_2,col_3,14 January 2025
-"Pay to: Acme Billing CO. 123 Main St. Cityville, NA 12345","Pay to: Acme Billing CO. 123 Main St. Cityville, NA 12345","Pay to: Acme Billing CO. 123 Main St. Cityville, NA 12345","Pay to: Acme Billing CO. 123 Main St. Cityville, NA 12345","Customer: John Smith 321 Willow Way Southeast Northwestershire, MA 54321"
-Name/Description,Qty.,Qty.,@,Cost
-Paperclips,1000,1000,0.01,10.00
-Staples(box),100,100,1.00,100.00
-Subtotal,Subtotal,Subtotal,Subtotal,110.00
-Tax,Tax,8%,8%,8/80
-Grand Total,Grand Total,Grand Total,Grand Total,$ 118.80
